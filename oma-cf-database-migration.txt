@@ -1,0 +1,334 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Intro to Amazon DMS qwikLAB Cloudformation Template: Create an Amazon
+  Aurora cluster in an Amazon Virtual Private Cloud (VPC). **WARNING** This template
+  creates Amazon Aurora Cluster. You will be billed for the AWS resources used if
+  you create a stack from this template. '
+Parameters:
+  Windows2016BaseAMIID:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-windows-latest/Windows_Server-2016-English-Full-Base
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair
+  AdministratorPassword:
+    Default: P@ssw0rdAm#$96Ty
+    Type: String
+Resources:
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      MasterUsername: master
+      MasterUserPassword: master123
+      Engine: aurora
+      DBClusterParameterGroupName: !Ref 'AuroraParameterGroup'
+      VpcSecurityGroupIds:
+        - !Ref 'SecurityGroup'
+      DBSubnetGroupName: !Ref 'AuroraSubnetGroup'
+  RDSDBInstance1:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBSubnetGroupName: !Ref 'AuroraSubnetGroup'
+      Engine: aurora
+      DBClusterIdentifier: !Ref 'AuroraCluster'
+      AvailabilityZone: !GetAtt 'Subnet.AvailabilityZone'
+      DBInstanceClass: db.r3.large
+    DeletionPolicy: Delete
+  AuroraParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Description: Cluster paraeter group
+      Family: aurora5.6
+      Parameters:
+        character_set_database: utf32
+  AuroraSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Cluster subnet group
+      SubnetIds:
+        - !Ref 'Subnet'
+        - !Ref 'BackupSubnet'
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: Name
+          Value: Lab-VPC
+      EnableDnsSupport: 'true'
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - '0'
+        - !GetAZs
+          Ref: AWS::Region
+      CidrBlock: 10.0.0.0/24
+      VpcId: !Ref 'VPC'
+  BackupSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - '1'
+        - !GetAZs
+          Ref: AWS::Region
+      CidrBlock: 10.0.1.0/24
+      VpcId: !Ref 'VPC'
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          FromPort: '3389'
+          ToPort: '3389'
+          IpProtocol: tcp
+        - CidrIp: 0.0.0.0/0
+          FromPort: '3306'
+          ToPort: '3306'
+          IpProtocol: tcp
+        - CidrIp: 0.0.0.0/0
+          FromPort: '22'
+          ToPort: '22'
+          IpProtocol: tcp
+      VpcId: !Ref 'VPC'
+  WindowsInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref 'Windows2016BaseAMIID'
+      KeyName: !Ref 'KeyName'
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: 'true'
+          DeleteOnTermination: 'true'
+          DeviceIndex: '0'
+          GroupSet:
+            - !Ref 'SecurityGroup'
+          SubnetId: !Ref 'Subnet'
+      IamInstanceProfile: !Ref 'InstanceProfiles'
+      InstanceType: m4.large
+      Tags:
+        - Key: Name
+          Value: Lab Instance
+      UserData: !Base64
+        Fn::Sub:
+          - |-
+            <script>
+            net user Administrator ${AdministratorPassword}
+            cfn-init.exe -v -s ${AWS::StackName} -r WindowsInstance --region ${AWS::Region}
+            cfn-signal.exe -e %ERRORLEVEL% ${Param1}
+            </script>
+          - Param1: !Base64
+              Ref: WaitHandle
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            C:\tools\mysql\current\my.ini:
+              content: "[mysqld]\r\nbasedir=C:\\tools\\mysql\\current\r\ndatadir=C:\\\
+                ProgramData\\MySQL\\data\r\nbind-address=0.0.0.0\r\nlog_bin\r\nbinlog_checksum=NONE\r\
+                \nserver_id=1\r\n"
+            C:\install\vcredist2013.x64.exe:
+              source: https://s3-us-west-2.amazonaws.com/aws-tc-largeobjects/SPLs/SharedSoftware/mysql/vcredist_x64.exe
+            C:\install\vcredist2015.x64.exe:
+              source: https://s3-us-west-2.amazonaws.com/aws-tc-largeobjects/SPLs/SharedSoftware/mysql/vc_redist.x64.exe
+            C:\Users\Administrator\Desktop\mysql-installer-community-5.7.22.1.msi:
+              source: https://s3-us-west-2.amazonaws.com/aws-tc-largeobjects/SPLs/SharedSoftware/mysql/mysql-installer-community-5.7.22.1.msi
+            C:\install\ie-changes.ps1:
+              source: https://s3-us-west-2.amazonaws.com/us-west-2-aws-training/awsu-spl/spl-37/scripts/ie-changes.ps1
+            C:\install\firewall.ps1:
+              source: https://s3-us-west-2.amazonaws.com/us-west-2-aws-training/awsu-spl/spl-37/scripts/firewall.ps1
+            c:\Users\Administrator\Documents\dumps\dump.sql:
+              source: https://s3-us-west-2.amazonaws.com/us-west-2-aws-training/awsu-spl/spl-37/scripts/Dump.sql
+          commands:
+            1-install-vc_redist2013:
+              command: vcredist2013.x64.exe /install /quiet
+              cwd: /install
+            2-install-vc_redist2015:
+              command: vcredist2015.x64.exe /install /quiet
+              cwd: /install
+            3-configure-firewall:
+              command: powershell.exe -Command C:\install\firewall.ps1
+              cwd: /install
+            4-configure-firewall:
+              command: powershell.exe -Command C:\install\ie-changes.ps1
+              cwd: /install
+  WaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+  WaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: WindowsInstance
+    Properties:
+      Handle: !Ref 'WaitHandle'
+      Timeout: '2400'
+  InstanceProfiles:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'IAMRoles'
+  IAMRoles:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: labsrole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rds:Describe*
+                Resource:
+                  - '*'
+  dmsvpcrole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: dms-vpc-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - dms.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+  dmscloudwatch:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: dms-cloudwatch-logs-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - dms.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+  dmsaccessforendpoint:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: dms-access-for-endpoint
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - dms.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+  dmsaccessfortasks:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: dms-access-for-tasks
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - dms.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackName'
+        - Key: Description
+          Value: Lab Internet Gateway
+        - Key: Environment
+          Value: LABS
+        - Key: Name
+          Value: LABSInternetGateway
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Application
+          Value: !Ref 'AWS::StackName'
+        - Key: Description
+          Value: Lab Route Table
+        - Key: Environment
+          Value: LABS
+        - Key: Name
+          Value: LABSInternalRouteTable
+      VpcId: !Ref 'VPC'
+  SubnetRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref 'RouteTable'
+      SubnetId: !Ref 'Subnet'
+  SubnetRouteTablebackup:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref 'RouteTable'
+      SubnetId: !Ref 'BackupSubnet'
+  Route:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref 'RouteTable'
+      GatewayId: !Ref 'InternetGateway'
+  VPCGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref 'InternetGateway'
+      VpcId: !Ref 'VPC'
+      
+Outputs:
+  ClusterEndpoint:
+    Description: Endpoint for the newly created aurora cluster
+    Value: !Sub '${AuroraCluster.Endpoint.Address}'
+  WindowsIP:
+    Value: !GetAtt 'WindowsInstance.PublicIp'
+  WindowsPrivateIP:
+    Value: !GetAtt 'WindowsInstance.PrivateIp'
